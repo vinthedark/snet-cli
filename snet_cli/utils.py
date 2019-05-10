@@ -1,11 +1,15 @@
-import _md5
 import json
 import os
+import functools
+
+from urllib.parse import urlparse
 from pathlib import Path
 
 import web3
 import pkg_resources
+import grpc
 from grpc_tools.protoc import main as protoc
+
 
 class DefaultAttributeObject(object):
     def __init__(self, **kwargs):
@@ -79,6 +83,10 @@ def type_converter(t):
             return safe_address_converter
         else:
             return str
+
+
+def bytes32_to_str(b):
+    return b.rstrip(b"\0").decode("utf-8")
 
 
 def _add_next_paths(path, entry_path, seen_paths, next_paths):
@@ -158,8 +166,8 @@ def compile_proto(entry_path, codegen_dir, proto_file=None):
     except Exception as e:
         return False
 
-# return element of abi (return None if fails to find)
 def abi_get_element_by_name(abi, name):
+    """ Return element of abi (return None if fails to find) """
     if (abi and "abi" in abi):
         for a in abi["abi"]:
             if ("name" in a and a["name"] == name):
@@ -169,3 +177,62 @@ def abi_get_element_by_name(abi, name):
 def abi_decode_struct_to_dict(abi, struct_list):
     return {el_abi["name"] : el for el_abi, el in zip(abi["outputs"], struct_list)}
 
+
+def int4bytes_big(b):
+    return int.from_bytes(b, byteorder='big')
+
+
+def is_valid_endpoint(url):
+    """
+    Just ensures the url has a scheme (http/https), and a net location (IP or domain name).
+    Can make more advanced or do on-network tests if needed, but this is really just to catch obvious errors.
+    >>> is_valid_endpoint("https://34.216.72.29:6206")
+    True
+    >>> is_valid_endpoint("blahblah")
+    False
+    >>> is_valid_endpoint("blah://34.216.72.29")
+    False
+    >>> is_valid_endpoint("http://34.216.72.29:%%%")
+    False
+    >>> is_valid_endpoint("http://192.168.0.2:9999")
+    True
+    """
+    try:
+        result = urlparse(url)
+        if result.port:
+            _port = int(result.port)
+        return (
+            all([result.scheme, result.netloc]) and
+            result.scheme in ['http', 'https']
+        )
+    except ValueError:
+        return False
+
+
+def remove_http_https_prefix(endpoint):
+    """remove http:// or https:// prefix if presented in endpoint"""
+    endpoint = endpoint.replace("https://","")
+    endpoint = endpoint.replace("http://","")
+    return endpoint
+
+def open_grpc_channel(endpoint):
+    """
+       open grpc channel:
+           - for http://  we open insecure_channel
+           - for https:// we open secure_channel (with default credentials)
+           - without prefix we open insecure_channel
+    """
+    if (endpoint.startswith("https://")):
+        return grpc.secure_channel(remove_http_https_prefix(endpoint), grpc.ssl_channel_credentials())
+    return grpc.insecure_channel(remove_http_https_prefix(endpoint))
+
+def rgetattr(obj, attr):
+    """
+    >>> from types import SimpleNamespace
+    >>> args = SimpleNamespace(a=1, b=SimpleNamespace(c=2, d='e'))
+    >>> rgetattr(args, "a")
+    1
+    >>> rgetattr(args, "b.c")
+    2
+    """
+    return functools.reduce(getattr, [obj] + attr.split('.'))
